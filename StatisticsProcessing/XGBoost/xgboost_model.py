@@ -194,22 +194,6 @@ def main():
     plt.close()
     logger.info("特征重要性图已保存：%s", OUTPUT_DIR / "feature_importance.png")
 
-    # 预测 vs 实际散点图
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, y_true, y_pred, title in [
-        (axes[0], y_train, y_pred_train, "训练集 2008-2019"),
-        (axes[1], y_test, y_pred_test, "测试集 2020-2024"),
-    ]:
-        ax.scatter(y_true, y_pred, alpha=0.4, s=10)
-        ax.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], "r--", lw=1)
-        ax.set_xlabel("实际单产")
-        ax.set_ylabel("预测单产")
-        ax.set_title(f"{title}\nR²={r2_score(y_true, y_pred):.4f}  MAE={mean_absolute_error(y_true, y_pred):.2f}")
-    plt.tight_layout()
-    fig.savefig(OUTPUT_DIR / "pred_vs_actual.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    logger.info("预测图已保存：%s", OUTPUT_DIR / "pred_vs_actual.png")
-
     logger.info("=" * 60)
     logger.info("全部完成。")
 
