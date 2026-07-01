@@ -19,6 +19,9 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
 import matplotlib
 
+# === SHAP ===
+import shap
+
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
@@ -172,6 +175,36 @@ def main():
     fig.savefig(OUTPUT_DIR / "rf_feature_importance.png", dpi=150, bbox_inches="tight")
     plt.close()
     logger.info("图已保存：%s", OUTPUT_DIR)
+
+    # ==================== SHAP 分析 ====================
+    logger.info("=" * 60)
+    logger.info("开始 SHAP 分析...")
+
+    sample_size = min(300, len(X_train))
+    X_sample = X_train.sample(n=sample_size, random_state=42)
+    logger.info("使用 %d 个样本计算 SHAP 值", sample_size)
+
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer(X_sample)
+
+    # 蜂群图
+    plt.figure(figsize=(12, 8))
+    shap.summary_plot(shap_values, X_sample, show=False)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "rf_shap_beeswarm.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info("SHAP 蜂群图已保存：%s", OUTPUT_DIR / "rf_shap_beeswarm.png")
+
+    # 部分依赖图
+    top_feature = importance.iloc[0]["feature"]
+    if top_feature in X_sample.columns:
+        plt.figure(figsize=(8, 6))
+        shap.dependence_plot(top_feature, shap_values.values, X_sample, show=False)
+        plt.tight_layout()
+        plt.savefig(OUTPUT_DIR / "rf_shap_dependence.png", dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info("SHAP 部分依赖图（特征：%s）已保存：%s",
+                    top_feature, OUTPUT_DIR / "rf_shap_dependence.png")
 
     logger.info("=" * 60)
     logger.info("全部完成。")

@@ -19,6 +19,9 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
 import matplotlib
 
+# === SHAP ADDED ===
+import shap
+
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
@@ -103,7 +106,6 @@ def main():
     panel = add_lags(panel)
 
     # One-hot 省份
-    panel = pd.get_dummies(panel, columns=[], prefix="", prefix_sep="")
     panel = panel.reset_index()
     prov_dummies = pd.get_dummies(panel["省份"], prefix="prov")
     panel = pd.concat([panel, prov_dummies], axis=1)
@@ -194,8 +196,42 @@ def main():
     plt.close()
     logger.info("特征重要性图已保存：%s", OUTPUT_DIR / "feature_importance.png")
 
+    # ==================== SHAP 分析（使用新样式 API） ====================
     logger.info("=" * 60)
-    logger.info("全部完成。")
+    logger.info("开始 SHAP 分析...")
+
+    # 抽取样本子集加速（背景数据和待解释数据可使用相同样本）
+    sample_size = len(X_train)
+    X_sample = X_train.sample(n=sample_size, random_state=42)
+    logger.info("使用 %d 个样本计算 SHAP 值", sample_size)
+
+    # 创建 TreeExplainer，传入模型和背景数据（X_sample）
+    explainer = shap.TreeExplainer(model)
+    # 新样式：直接调用解释器获得 Explanation 对象
+    shap_values = explainer(X_sample)   # 返回 shap.Explanation 对象
+
+    # ---- 蜂群图（Beeswarm） ----
+    plt.figure(figsize=(12, 8))
+    # summary_plot 可直接接受 Explanation 对象
+    shap.summary_plot(shap_values, X_sample, show=False)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "shap_beeswarm.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info("SHAP 蜂群图已保存：%s", OUTPUT_DIR / "shap_beeswarm.png")
+
+    # ---- 部分依赖图（对最重要特征） ----
+    top_feature = importance.iloc[0]["feature"]
+    if top_feature in X_sample.columns:
+        plt.figure(figsize=(8, 6))
+        # dependence_plot 可接受 numpy 数组或 Explanation 对象，这里传入 .values 确保兼容
+        shap.dependence_plot(top_feature, shap_values.values, X_sample, show=False)
+        plt.tight_layout()
+        plt.savefig(OUTPUT_DIR / "shap_dependence.png", dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info("SHAP 部分依赖图（特征：%s）已保存：%s",
+                    top_feature, OUTPUT_DIR / "shap_dependence.png")
+    else:
+        logger.warning("特征 %s 不在样本中，跳过部分依赖图", top_feature)
 
 
 if __name__ == "__main__":
