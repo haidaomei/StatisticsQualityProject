@@ -118,7 +118,7 @@ def main():
         logger.info("=" * 60)
         logger.info("分位数回归 τ=%.2f", tau)
         model = sm.QuantReg(y, X)
-        result = model.fit(q=tau, max_iter=5000)
+        result = model.fit(q=tau, max_iter=100000)
         results[tau] = result
         logger.info("Pseudo R² = %.4f", result.prsquared)
 
