@@ -1,0 +1,101 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 11
+skinparam rectangleFontSize 11
+skinparam rectangleBorderColor #333333
+skinparam arrowColor #555555
+
+title **中国农业灾害与粮食单产——数据分析全流程**
+
+|数据处理|
+start
+:抓取国家统计局API数据;
+note right: fetch_stats_agri.py\n44个农业指标数据集
+
+:手动筛除无关大表;
+note right: 排除与粮食生产\n无关的数据集
+
+:关键词过滤非粮指标;
+note right: filter_non_grain.py\n剔除麻/棉/油料/烟/糖\n禽/猪/畜/茶/蛋/牧/渔/林/果等
+
+:按省份拆分数据;
+note right: divide_by_province.py\n31省各自独立文件夹
+
+:系统性缺失识别与剔除;
+note right: align_provinces.py\n任一省NaN≥10→全剔除\n补全2005-2024缺失年份
+
+:线性插值 + OLS外推;
+note right: linear_fill.py\n闭区间线性插值\n首尾最小二乘外推
+
+:3σ去噪 + 重新插值;
+note right: denoise.py\n|value-mean|>3σ抹除\nstd=0则保留
+
+:数据合理性修正;
+note right: finalize.py\n负数→0\n个/台/部→floor取整
+
+:补充误杀的农药数据;
+note right: add_pesticide.py\n从screened读取\n完整处理链后并入
+
+|相关性分析|
+:相关性热力图;
+note right: Pearson + Spearman\n58指标 × 20年全国均值
+
+:手动筛选核心变量;
+note right: 因变量: 单产\n自变量: 农机/薄膜/农药\n用电/化肥/灌溉/受灾
+
+|固定效应建模|
+fork
+  :双向固定效应面板回归;
+  note right: PanelOLS\n省份FE + 年份FE + clustered SE
+fork
+  :分组交互项回归;
+  note right: 主产区vs非主产区\n温带/亚热带/大陆性气候\n三级地形阶梯
+fork
+  :分位数回归;
+  note right: τ=0.25/0.50/0.75\nstatsmodels QuantReg
+end fork
+
+|机器学习|
+fork
+  :XGBoost 回归;
+  note right: 7IV + lag1-3\n2008-2019训练\n2020-2024测试
+fork
+  :随机森林 回归;
+  note right: 相同特征/划分\nn_estimators=300
+end fork
+
+:SHAP 特征归因 + 部分依赖图;
+
+|因果推断|
+fork
+  :双重差分 DID;
+  note right: 31个特大灾害事件\ntreated=0/1\n双向FE
+fork
+  :合成控制法 SCM;
+  note right: 河南2023烂场雨\n山东+安徽+河北合成\nATT=−177 kg/ha
+end fork
+
+:安慰剂检验;
+note right: 河南2022丰年→SCM通过\n间隙在正常波动内
+
+:滚动预测;
+note right: features(t)→DV(t+1)\nXGBoost+RF三窗滚动\n2022/2023/2024
+
+fork
+  :混淆矩阵;
+  note right: XGBoost二分类\n识别重大灾害事件
+fork
+  :ROC曲线;
+  note right: AUC=0.92\n阈值调节可视化
+fork
+  :K-S检验;
+  note right: 最优阈值=0.058\nKS=0.83
+end fork
+
+:WebGIS 交互地图;
+note right: D3.js中国省份地图\n悬停tooltip\n待填真实数据
+
+stop
+
+@enduml
