@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>中国省份交互地图</title>
+<script src="d3.v7.min.js">
+</script>
+<style>
+  :root
+  {
+    --bg: #f0f0f0;
+    --fill: #e8e8e8;
+    --fill-hover: #dadada;
+    --stroke: #000;
+    --stroke-hover: #fff;
+    --stroke-width: 1;
+    --stroke-width-hover: 2.5;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body
+  {
+    background: var(--bg);
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #map-wrapper
+  {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  #main-map
+  {
+    display: block;
+    width: 100vw !important;
+    height: 100vh !important;
+    min-width: 100vw;
+    min-height: 100vh;
+  }
+
+  /*定义SVG发光滤镜*/
+  #main-map defs filter#glow feGaussianBlur
+  {
+    /*populated inline via JS if needed*/
+  }
+
+  /*省份路径*/
+  .province
+  {
+    fill: var(--fill);
+    stroke: var(--stroke);
+    stroke-width: var(--stroke-width);
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    cursor: pointer;
+    transition: fill 0.3s ease, stroke 0.3s ease, stroke-width 0.3s ease;
+  }
+  .province.hovered
+  {
+    fill: var(--fill-hover);
+    stroke: var(--stroke-hover);
+    stroke-width: var(--stroke-width-hover);
+  }
+
+  /*克隆叠加层:置顶+缩放动画,不响应鼠标事件*/
+  .province-clone
+  {
+    fill: var(--fill-hover);
+    stroke: var(--stroke-hover);
+    stroke-width: var(--stroke-width-hover);
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    pointer-events: none;
+  }
+
+  /*港澳台无交互不可拦截鼠标事件*/
+  .province-static
+  {
+    fill: var(--fill);
+    stroke: var(--stroke);
+    stroke-width: var(--stroke-width);
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  /*Tooltip*/
+  #tooltip
+  {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    background: #fff;
+    border: 1.5px solid #000;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.65;
+    max-width: 240px;
+    z-index: 999;
+    transition: opacity 0.2s ease;
+    box-shadow: 2px 2px 8px rgba(0,0,0,0.12);
+  }
+  #tooltip.visible
+  {
+    opacity: 1;
+  }
+  #tooltip .tt-content
+  {
+    color: #333;
+    white-space: pre-line;
+  }
+
+  /*加载提示*/
+  #loading
+  {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%,-50%);
+    font-size: 15px;
+    color: #999;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+
+<div id="map-wrapper">
+  <svg id="main-map" preserveAspectRatio="xMidYMid meet"></svg>
+  <div id="loading">加载地图数据中...</div>
+  <div id="tooltip">
+    <div class="tt-content"></div>
+  </div>
+</div>
+
+<script>
+(async function ()
+{
+  /*常量&DOM引用*/
+  const mainSvg = d3.select('#main-map');
+  const tooltipEl = document.getElementById('tooltip');
+  const loadingEl = document.getElementById('loading');
+  const wrapperEl = document.getElementById('map-wrapper');
+
+  //DataV公开GeoJSON
+  const GEO_URL = 'china.json';
+
+  //特殊行政区adcode不触发悬停
+  const STATIC_ADCODES = new Set(['710000', '810000', '820000']);//台湾/香港/澳门
+
+  //已知静态行政区名称双重校验
+  const STATIC_NAMES = new Set(['台湾省', '香港特别行政区', '澳门特别行政区']);
+
+  //南海相关名称用于缩略图不在主图渲染
+  const SOUTH_SEA_NAMES = new Set(['南海诸岛']);
+
+  //南海诸岛相关adcode
+  const HAINAN_ADCODE = '460000';
+
+  /*1.加载GeoJSON*/
+  let geoJSON;
+  try
+  {
+    geoJSON = await d3.json(GEO_URL);
+    loadingEl.style.display = 'none';
+  } catch (err)
+  {
+    loadingEl.textContent = '地图数据加载失败,请检查网络后刷新页面';
+    console.error('GeoJSON加载失败:', err);
+    return;
+  }
+
+  /*2.GeoJSON预处理:移除MultiPolygon末尾的南海边框DataV数据中每个省份feature的MultiPolygon最后附加了一个相同的南海边框矩形,在此直接删除末位多边形*/
+  geoJSON.features.forEach(f =>
+  {
+    const geom = f.geometry;
+    if (geom && geom.type === 'MultiPolygon' && geom.coordinates.length > 1)
+    {
+      geom.coordinates.pop();//移除末尾边框多边形
+      if (geom.coordinates.length === 1)
+      {
+        f.geometry = { type: 'Polygon', coordinates: geom.coordinates[0] };
+      }
+    }
+    //也处理单Polygon中的内环hole场景
+    if (geom && geom.type === 'Polygon' && geom.coordinates.length > 1)
+    {
+      //移除最后一个环(可能是边框hole)
+      geom.coordinates.pop();
+    }
+  });
+
+  /*3.筛选&分类features,仅保留省级行政区*/
+  const allFeatures = geoJSON.features;
+
+  //辅助:判断是否为省级
+  function isProvinceLevel(f)
+  {
+    const adcode = String(f.properties.adcode || '');
+    const level  = f.properties.level;//DataV可能提供level字段
+    //优先用level字段
+    if (level) return level === 'province';
+    // 回退,省级adcode以'0000'结尾如110000,440000,710000
+    return adcode.endsWith('0000') && adcode.length === 6;
+  }
+
+  const provinces = allFeatures.filter(isProvinceLevel);
+
+  //安全回退,如果筛选后为空,则使用全部特征
+  const workingFeatures = provinces.length > 0 ? provinces : allFeatures;
+  if (provinces.length === 0)
+  {
+    console.warn('未匹配到省级特征,adcode不以0000 结尾,使用全部特征');
+  }
+
+  //用于主地图extent计算的特征,排除南海诸岛以避免投影过度缩小
+  const mainExtentFeatures = [];
+  const southSeaFeatures = [];//仅用于缩略图
+  const staticFeatures = [];//港澳台,仅绘制轮廓,无交互
+
+  for (const f of workingFeatures)
+  {
+    const adcode = String(f.properties.adcode || '');
+    const name = f.properties.name || '';
+
+    // 南海诸岛等->仅放入缩略图,不放入主地图
+    if (SOUTH_SEA_NAMES.has(name))
+    {
+      southSeaFeatures.push(f);
+      continue;
+    }
+
+    //港澳台->仅静态轮廓(双重校验adcode+name)
+    if (STATIC_ADCODES.has(adcode) && STATIC_NAMES.has(name))
+    {
+      staticFeatures.push(f);
+      continue;
+    }
+
+    //海南->主图+缩略图
+    if (adcode === HAINAN_ADCODE)
+    {
+      mainExtentFeatures.push(f);
+      southSeaFeatures.push(f);
+      continue;
+    }
+
+    //其余省份->主图
+    mainExtentFeatures.push(f);
+  }
+
+  //补充查找南海相关特征,名称或adcode前缀匹配,排除已处理的海南
+  for (const f of workingFeatures)
+  {
+    const adcode = String(f.properties.adcode || '');
+    const name = f.properties.name || '';
+
+    //已处理过的跳过
+    if (SOUTH_SEA_NAMES.has(name)) continue;
+    if (adcode === HAINAN_ADCODE) continue;
+    if (STATIC_ADCODES.has(adcode) && STATIC_NAMES.has(name)) continue;
+
+    //南海其他岛屿,adcode以46开头但不是460000
+    if (adcode.startsWith('46') || SOUTH_SEA_NAMES.has(name))
+    {
+      //检查是否已在列表中
+      if (!southSeaFeatures.includes(f))
+      {
+        southSeaFeatures.push(f);
+      }
+    }
+  }
+
+  //主图FeatureCollection
+  const mainFC =
+  {
+    type: 'FeatureCollection',
+    features: [...mainExtentFeatures, ...staticFeatures]
+  };
+
+  /*4.主图投影&路径生成器*/
+  //使用手动校准的Mercator投影避免fitExtent受离群特征影响
+  const projection = d3.geoMercator();
+  const pathGen = d3.geoPath(projection);
+
+  const BASE_CENTER = [105, 34];
+  const BASE_SCALE  = 445;
+  const BASE_W = 960;
+  const BASE_H = 540;
+
+  let currentSvgW, currentSvgH, SVG_AREA;
+
+  function updateProjection()
+  {
+    currentSvgW = window.innerWidth;
+    currentSvgH = window.innerHeight;
+    SVG_AREA = currentSvgW * currentSvgH;
+    mainSvg.attr('width', currentSvgW).attr('height', currentSvgH);
+    mainSvg.attr('viewBox', `0 0 ${currentSvgW} ${currentSvgH}`);
+
+    const scaleX = BASE_SCALE * (currentSvgW / BASE_W);
+    const scaleY = BASE_SCALE * (currentSvgH / BASE_H);
+    projection
+      .center(BASE_CENTER)
+      .scale(Math.min(scaleX, scaleY))
+      .translate([currentSvgW / 2, currentSvgH / 2]);
+  }
+
+  //全部省份放入一个<g>
+  const g = mainSvg.append('g');
+
+  const paths = g.selectAll('path')
+    .data([...mainExtentFeatures, ...staticFeatures])
+    .join('path')
+    .attr('class', d =>
+    {
+      const adcode = String(d.properties.adcode || '');
+      return STATIC_ADCODES.has(adcode) ? 'province-static' : 'province';
+    });
+
+  //渲染/重绘函数,首屏+resize均调用
+  function renderPaths()
+  {
+    updateProjection();
+    paths.attr('d', pathGen);
+    trimAndComputeCentroids();
+  }
+
+  function trimAndComputeCentroids()
+  {
+    const tmpSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    tmpSvg.style.position = 'absolute';
+    tmpSvg.style.top = '-9999px';
+    tmpSvg.style.left = '-9999px';
+    tmpSvg.setAttribute('width', currentSvgW);
+    tmpSvg.setAttribute('height', currentSvgH);
+    tmpSvg.setAttribute('viewBox', `0 0 ${currentSvgW} ${currentSvgH}`);
+    const tmpPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    tmpSvg.appendChild(tmpPath);
+    document.body.appendChild(tmpSvg);
+
+    paths.each(function ()
+    {
+      const el = d3.select(this);
+      const dStr = el.attr('d');
+      if (!dStr) return;
+
+      const parts = dStr.split(/(?=M)/g).filter(s => s.trim());
+      const keptParts = [];
+
+      for (const part of parts)
+      {
+        tmpPath.setAttribute('d', part.trim());
+        let bbox;
+        try { bbox = tmpPath.getBBox(); } catch(e) { bbox = { width: 0, height: 0 }; }
+        const area = bbox.width * bbox.height;
+        //边框特征:面积>25%SVG且近正方形,宽高比0.6~1.6
+        const aspect = bbox.width / Math.max(bbox.height, 1);
+        const isFrame = area > SVG_AREA * 0.25 && aspect > 0.6 && aspect < 1.6;
+        if (!isFrame)
+        {
+          keptParts.push(part.trim());
+        }
+      }
+
+      const cleaned = keptParts.join(' ');
+      if (cleaned && cleaned !== dStr)
+      {
+        el.attr('d', cleaned);
+      }
+
+      const bbox = this.getBBox();
+      const cx = bbox.x + bbox.width / 2;
+      const cy = bbox.y + bbox.height / 2;
+      el.attr('data-cx', cx)
+        .attr('data-cy', cy)
+        .attr('transform', `translate(${cx},${cy}) scale(1) translate(${-cx},${-cy})`);
+    });
+
+    document.body.removeChild(tmpSvg);
+  }
+
+  //首屏渲染
+  renderPaths();
+
+  //窗口大小变化时重绘(防抖)
+  let resizeTimer;
+  window.addEventListener('resize', () =>
+  {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderPaths, 200);
+  });
+
+  /*6.省份占位数据*/
+  const dataMap =
+  {
+    '北京市': 'helloworld',
+    '天津市': 'helloworld',
+    '河北省': 'helloworld',
+    '山西省': 'helloworld',
+    '内蒙古自治区': 'helloworld',
+    '辽宁省': 'helloworld',
+    '吉林省': 'helloworld',
+    '黑龙江省': 'helloworld',
+    '上海市': 'helloworld',
+    '江苏省': 'helloworld',
+    '浙江省': 'helloworld',
+    '安徽省': 'helloworld',
+    '福建省': 'helloworld',
+    '江西省': 'helloworld',
+    '山东省': 'helloworld',
+    '河南省': 'helloworld',
+    '湖北省': 'helloworld',
+    '湖南省': 'helloworld',
+    '广东省': 'helloworld',
+    '广西壮族自治区': 'helloworld',
+    '海南省': 'helloworld',
+    '重庆市': 'helloworld',
+    '四川省': 'helloworld',
+    '贵州省': 'helloworld',
+    '云南省': 'helloworld',
+    '西藏自治区': 'helloworld',
+    '陕西省': 'helloworld',
+    '甘肃省': 'helloworld',
+    '青海省': 'helloworld',
+    '宁夏回族自治区': 'helloworld',
+    '新疆维吾尔自治区': 'helloworld',
+  };
+
+  function getProvinceData(name)
+  {
+    if (dataMap[name]) return dataMap[name];
+    //通用占位
+    return `helloworld`;
+  }
+
+  /*7.Tooltip控制*/
+  const ttContent = tooltipEl.querySelector('.tt-content');
+
+  function showTooltip(name, evt)
+  {
+    ttContent.textContent = `${name}\n` + getProvinceData(name);
+    tooltipEl.classList.add('visible');
+    positionTooltip(evt);
+  }
+
+  function hideTooltip()
+  {
+    tooltipEl.classList.remove('visible');
+  }
+
+  function positionTooltip(evt)
+  {
+    const wr = wrapperEl.getBoundingClientRect();
+    const tr = tooltipEl.getBoundingClientRect();
+
+    let left = evt.clientX - wr.left + 16;
+    let top  = evt.clientY - wr.top  - 8;
+
+    //防止溢出右侧,翻转到左侧
+    if (left + tr.width > wr.width - 4)
+    {
+      left = evt.clientX - wr.left - tr.width - 16;
+    }
+    //防止溢出底部,翻转到上方
+    if (top + tr.height > wr.height - 4)
+    {
+      top = evt.clientY - wr.top - tr.height - 12;
+    }
+    //硬边界
+    if (left < 4) left = 4;
+    if (top  < 4) top  = 4;
+
+    tooltipEl.style.left = left + 'px';
+    tooltipEl.style.top  = top  + 'px';
+  }
+
+  /*8.交互绑定(仅.province,排除.province-static)*/
+  paths
+    .filter(function ()
+    {
+      return d3.select(this).classed('province');
+    })
+    .on('mouseenter', function (event, d)
+    {
+      const el = d3.select(this);
+      const cx = +el.attr('data-cx');
+      const cy = +el.attr('data-cy');
+
+      //先克隆,此时原体opacity仍为1
+      const clone = this.cloneNode(true);
+      clone.classList.add('province-clone');
+      clone.style.pointerEvents = 'none';
+      clone.setAttribute('transform', el.attr('transform'));
+      clone.setAttribute('opacity', 1);//确保克隆体不透明
+      mainSvg.node().appendChild(clone);
+      this.__clone = clone;
+
+      //再隐藏原体
+      el.classed('hovered', true)
+        .attr('opacity', 0);
+
+      //只对克隆体做缩放动画
+      d3.select(clone).transition().duration(300)
+        .attr('transform', `translate(${cx},${cy}) scale(1.08) translate(${-cx},${-cy})`);
+
+      showTooltip(d.properties.name, event);
+    })
+    .on('mousemove', function (event)
+    {
+      if (tooltipEl.classList.contains('visible'))
+      {
+        positionTooltip(event);
+      }
+    })
+    .on('mouseleave', function ()
+    {
+      const el = d3.select(this);
+
+      el.classed('hovered', false)
+        .attr('opacity', 1);
+
+      //移除克隆叠加层
+      if (this.__clone)
+      {
+        this.__clone.remove();
+        this.__clone = null;
+      }
+
+      hideTooltip();
+    });
+
+  console.log('中国省份交互地图初始化完成');
+  console.log('可交互省份:', mainExtentFeatures.length - staticFeatures.length);
+  console.log('仅展示轮廓（港澳台）:', staticFeatures.length);
+
+})();
+</script>
+
+</body>
+</html>
